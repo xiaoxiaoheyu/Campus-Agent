@@ -1,0 +1,73 @@
+package com.example.appbackend.dto;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Data
+@Schema(description = "地图标记响应")
+public class MarkerResponse {
+
+    @Schema(description = "标记ID")
+    private Long id;
+
+    @Schema(description = "设施ID")
+    private Long facilityId;
+
+    @Schema(description = "设施类型")
+    private Integer facilityType;
+
+    @Schema(description = "设施类型名称")
+    private String facilityTypeName;
+
+    @Schema(description = "标记名称")
+    private String markerName;
+
+    @Schema(description = "经度")
+    private BigDecimal longitude;
+
+    @Schema(description = "纬度")
+    private BigDecimal latitude;
+
+    @Schema(description = "地图图片横向坐标(0-1)")
+    private BigDecimal imageX;
+
+    @Schema(description = "地图图片纵向坐标(0-1)")
+    private BigDecimal imageY;
+
+    @Schema(description = "空间形态: POINT-点位 AREA-区域围栏")
+    private String geometryType;
+
+    @Schema(description = "区域围栏坐标(JSON二维数组)")
+    private String boundaryPoints;
+
+    @Schema(description = "图标URL")
+    private String iconUrl;
+
+    @Schema(description = "描述信息")
+    private String description;
+
+    @Schema(description = "位置描述")
+    private String location;
+
+    @Schema(description = "排序")
+    private Integer sort;
+
+    @Schema(description = "创建时间")
+    private LocalDateTime createTime;
+
+    @Schema(description = "更新时间")
+    private LocalDateTime updateTime;
+
+    @Schema(description = "设施图片列表")
+    private List<String> images;
+
+    @Schema(description = "缩略图URL（取设施图片列表首图）")
+    private String thumbnailUrl;
+
+    @Schema(description = "设施状态: 1-正常/开放 2-维护中 3-关闭/不可用")
+    private Integer status;
+}

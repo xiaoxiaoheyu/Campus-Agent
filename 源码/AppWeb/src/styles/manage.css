@@ -1,0 +1,58 @@
+/* 通用管理页面样式 */
+.manage-container {
+  padding: 24px;
+  background-color: #f5f7fa;
+}
+
+.manage-main {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* 搜索栏 */
+.search-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 20px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+/* 表格 */
+.ant-table-wrapper {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+/* 表单行 */
+.form-row {
+  display: flex;
+}
+
+/* 详情弹窗 */
+.detail-content p {
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .search-bar {
+    flex-direction: column;
+    gap: 16px;
+    align-items: stretch;
+  }
+  
+  .search-bar .ant-form-inline {
+    flex-wrap: wrap;
+  }
+  
+  .search-bar .ant-form-item {
+    margin-bottom: 8px;
+  }
+}

@@ -1,0 +1,148 @@
+{
+    "name" : "校辩智生",
+    "appid" : "__UNI__5037171",
+    "description" : "",
+    "versionName" : "1.0.0",
+    "versionCode" : "100",
+    "transformPx" : false,
+    /* 5+App特有相关 */
+    "app-plus" : {
+        "usingComponents" : true,
+        "nvueStyleCompiler" : "uni-app",
+        "compilerVersion" : 3,
+        "splashscreen" : {
+            "alwaysShowBeforeRender" : true,
+            "waiting" : true,
+            "autoclose" : true,
+            "delay" : 0
+        },
+        /* 模块配置：原生地图（高德），打包时必须勾选，否则真机弹 HTML5+ Runtime */
+        "modules" : {
+            "Maps" : {},
+            "Geolocation" : {}
+        },
+        /* 应用发布信息 */
+        "distribute" : {
+            /* android打包配置 */
+            "android" : {
+                "usesCleartextTraffic" : true,
+                "permissions" : [
+                    "<uses-permission android:name=\"android.permission.CHANGE_NETWORK_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.MOUNT_UNMOUNT_FILESYSTEMS\"/>",
+                    "<uses-permission android:name=\"android.permission.VIBRATE\"/>",
+                    "<uses-permission android:name=\"android.permission.READ_LOGS\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_WIFI_STATE\"/>",
+                    "<uses-feature android:name=\"android.hardware.camera.autofocus\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.CAMERA\"/>",
+                    "<uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>",
+                    "<uses-permission android:name=\"android.permission.GET_ACCOUNTS\"/>",
+                    "<uses-permission android:name=\"android.permission.READ_PHONE_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.CHANGE_WIFI_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\"/>",
+                    "<uses-permission android:name=\"android.permission.WAKE_LOCK\"/>",
+                    "<uses-permission android:name=\"android.permission.FLASHLIGHT\"/>",
+                    "<uses-feature android:name=\"android.hardware.camera\"/>",
+                    "<uses-permission android:name=\"android.permission.WRITE_SETTINGS\"/>"
+                ]
+            },
+            /* ios打包配置 */
+            "ios" : {
+                "dSYMs" : false
+            },
+            /* App 桌面图标（源图：static/brand/app-icon.png） */
+            "icons" : {
+                "android" : {
+                    "hdpi" : "static/app-icons/72x72.png",
+                    "xhdpi" : "static/app-icons/96x96.png",
+                    "xxhdpi" : "static/app-icons/144x144.png",
+                    "xxxhdpi" : "static/app-icons/192x192.png"
+                },
+                "ios" : {
+                    "appstore" : "static/app-icons/1024x1024.png",
+                    "ipad" : {
+                        "app" : "static/app-icons/76x76.png",
+                        "app@2x" : "static/app-icons/152x152.png",
+                        "notification" : "static/app-icons/20x20.png",
+                        "notification@2x" : "static/app-icons/40x40.png",
+                        "proapp@2x" : "static/app-icons/167x167.png",
+                        "settings" : "static/app-icons/29x29.png",
+                        "settings@2x" : "static/app-icons/58x58.png",
+                        "spotlight" : "static/app-icons/40x40.png",
+                        "spotlight@2x" : "static/app-icons/80x80.png"
+                    },
+                    "iphone" : {
+                        "app@2x" : "static/app-icons/120x120.png",
+                        "app@3x" : "static/app-icons/180x180.png",
+                        "notification@2x" : "static/app-icons/40x40.png",
+                        "notification@3x" : "static/app-icons/60x60.png",
+                        "settings@2x" : "static/app-icons/58x58.png",
+                        "settings@3x" : "static/app-icons/87x87.png",
+                        "spotlight@2x" : "static/app-icons/80x80.png",
+                        "spotlight@3x" : "static/app-icons/120x120.png"
+                    }
+                }
+            },
+            /* SDK配置 */
+            "sdkConfigs" : {
+                "maps" : {
+                    "amap" : {
+                        "appkey_android" : "e4cbde60bc0dc20719889d7f585d9452",
+                        "appkey_ios" : "e4cbde60bc0dc20719889d7f585d9452"
+                    }
+                }
+            }
+        }
+    },
+    /* 快应用特有相关 */
+    "quickapp" : {},
+    "h5" : {
+        "devServer" : {
+            "port" : 5173,
+            "proxy" : {
+                "/__backend_api__" : {
+                    "target" : "http://127.0.0.1:8080",
+                    "changeOrigin" : true
+                }
+            }
+        },
+        "async" : {
+            "timeout" : 120000
+        },
+        "sdkConfigs" : {
+            "maps" : {
+                "amap" : {
+                    "key" : "64bc139adb6a611277fb8f6821b371ac",
+                    "securityJsCode" : "f3eda2c1d4c4c76bdb907d570b69d8c"
+                }
+            }
+        }
+    },
+    /* 小程序特有相关 */
+    "mp-weixin" : {
+        "appid" : "",
+        "setting" : {
+            "urlCheck" : false
+        },
+        "permission" : {
+            "scope.record" : {
+                "desc" : "用于会议实时语音转写"
+            }
+        },
+        "usingComponents" : true
+    },
+    "mp-alipay" : {
+        "usingComponents" : true
+    },
+    "mp-baidu" : {
+        "usingComponents" : true
+    },
+    "mp-toutiao" : {
+        "usingComponents" : true
+    },
+    "uniStatistics" : {
+        "enable" : false
+    },
+    "vueVersion" : "3"
+}

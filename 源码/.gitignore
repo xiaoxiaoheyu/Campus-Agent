@@ -1,0 +1,68 @@
+# IDE
+.idea/
+.vscode/
+.cursor/
+.worktrees/
+*.iml
+*.iws
+*.ipr
+.venv/
+.env
+deploy/.env
+deploy/.env.server
+venv/
+.python-version
+__pycache__/
+*.py[cod]
+
+# Maven
+AppBackend/target/
+AppBackend/.mvn/
+
+# Node (if needed)
+AppFrontend/node_modules/
+AppFrontend/dist/
+AppFrontend/unpackage/
+
+# Local DB dumps (may contain API keys / secrets; do not commit)
+smart-campus.sql
+smart-campus.sqlscp
+*.sqlscp
+
+# Docker runtime data
+ai-servers/.rag-data/
+ai-servers/data/ai-exports/
+
+# Submission rendering scratch (keep only final PPTX/DOCX/PDF artifacts)
+artifacts/submission/*.inspect.ndjson
+artifacts/submission/AgentA3-中国软件杯演示/
+artifacts/submission/*.zip
+artifacts/submission/*.zip.sha256
+docs/project-document/output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime logs
+logs/
+AppBackend/logs/
+.reasonix/
+.downloads/
+.codex-*.log
+
+# AI 渲染测试产物与扫描历史
+test-render-output/
+.mimosa/
+.tmp-ppt-*
+.tmp-audit-*/
+.tmp-chrome-cdp/
+ai-servers/.tmp-ppt-*/
+data/ppt-quality-qa/
+ai-servers/data/ppt-quality-qa/
+
+# Workspace outputs (agent scratch)
+output/
+
+# Visual Studio IDE cache
+.vs/

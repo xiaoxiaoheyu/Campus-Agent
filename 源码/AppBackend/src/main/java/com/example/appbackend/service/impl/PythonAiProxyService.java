@@ -1,0 +1,2083 @@
+package com.example.appbackend.service.impl;
+
+import com.example.appbackend.dto.LlmChatRequest;
+import com.example.appbackend.dto.LlmChatResponse;
+import com.example.appbackend.entity.Result;
+import com.example.appbackend.exception.BusinessException;
+import com.example.appbackend.repository.SystemConfigRepository;
+import com.example.appbackend.service.SystemConfigService;
+import com.example.appbackend.service.LangfuseConfigService;
+import com.example.appbackend.util.JwtUtil;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.core.io.buffer.DataBufferLimitException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.web.util.UriUtils;
+import reactor.core.publisher.Mono;
+
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.regex.Pattern;
+
+@Service
+public class PythonAiProxyService {
+    private static final Logger log = LoggerFactory.getLogger(PythonAiProxyService.class);
+    private static final String DEFAULT_AGENT_NAME = "leader_agent";
+    private static final String ARCHITECTURE_AGENT_NAME = "diagram_architecture_agent";
+    private static final String GOAL_DECOMPOSITION_AGENT_NAME = "goal_decomposition_agent";
+    private static final String CODING_TUTOR_AGENT_NAME = "python_coding_tutor_agent";
+    private static final String GENERATOR_AGENT_NAME = "python_problem_generator_agent";
+    private static final String RESUME_POLISH_EXPAND_AGENT_NAME = "resume_polish_expand_agent";
+    private static final String RESUME_EDIT_AGENT_NAME = "resume_edit_agent";
+    private static final String WEEKLY_JOB_AGENT_NAME = "weekly_job_recommendation_agent";
+    private static final String WEEKLY_JOB_TOOL_NAME = "weekly_job_recommendation_tool";
+    private static final String AGENT_MODEL_BINDING_PREFIX = "ai.agent-bindings.";
+    private static final String AGENT_ENABLED_PREFIX = "ai.agent-enabled.";
+    private static final String TOOL_ENABLED_PREFIX = "ai.tool-enabled.";
+    private static final String TOOL_BOUND_PREFIX = "ai.tool-bound.";
+    private static final String TOOL_RETRIEVAL_PREFIX = "ai.tool-retrieval.";
+    private static final String LEGACY_TEXT_CONFIG_PREFIX = "ai.service.text";
+    private static final Pattern SAFE_SSE_EVENT_NAME = Pattern.compile("[A-Za-z][A-Za-z0-9_-]{0,39}");
+    private static final long FILE_CONTENT_TOOL_TEST_MAX_BYTES = 25L * 1024 * 1024;
+    private static final Map<String, Set<String>> FILE_CONTENT_TOOL_EXTENSIONS = Map.of(
+            "markdown_to_text_tool", Set.of(".md", ".markdown"),
+            "txt_to_text_tool", Set.of(".txt"),
+            "word_to_text_tool", Set.of(".docx"),
+            "ppt_to_text_tool", Set.of(".pptx"),
+            "pdf_to_text_tool", Set.of(".pdf")
+    );
+    private static final Set<String> REMOVED_TOOL_NAMES = Set.of(
+            "generate_ppt_image_tool",
+            "generate_activity_image_tool",
+            "generate_knowledge_graph_image_tool",
+            "generate_mind_map_image_tool",
+            "generate_flowchart_image_tool",
+            "generate_architecture_image_tool"
+    );
+
+    private final WebClient.Builder webClientBuilder;
+    private final ObjectMapper objectMapper;
+    private final JwtUtil jwtUtil;
+    private final SystemConfigService systemConfigService;
+    private final SystemConfigRepository systemConfigRepository;
+    private final LangfuseConfigService langfuseConfigService;
+    private final String pythonBaseUrl;
+    private final long timeoutSeconds;
+    private final long pptTimeoutSeconds;
+    private final int fileResponseMaxInMemoryBytes;
+    private final String internalToken;
+
+    public record AgentDescriptor(String name, String role, boolean enabled, String modelBinding) {
+    }
+
+    public record QuestionGenerationPayload(
+            String agentName,
+            String input,
+            Integer maxQuestions,
+            String difficulty) {
+    }
+
+    public record GeneratedExportResponse(
+            byte[] bytes,
+            MediaType contentType,
+            long declaredLength) {
+    }
+
+    @FunctionalInterface
+    public interface SseEventHandler {
+        boolean handle(String eventName, Object eventPayload);
+    }
+
+    public PythonAiProxyService(WebClient.Builder webClientBuilder,
+                                ObjectMapper objectMapper,
+                                JwtUtil jwtUtil,
+                                SystemConfigService systemConfigService,
+                                SystemConfigRepository systemConfigRepository,
+                                LangfuseConfigService langfuseConfigService,
+                                @Value("${ai.python.base-url:http://localhost:8081}") String pythonBaseUrl,
+                                @Value("${ai.python.timeout-seconds:65}") long timeoutSeconds,
+                                @Value("${ai.python.ppt-timeout-seconds:300}") long pptTimeoutSeconds,
+                                @Value("${ai.python.file-response-max-in-memory-bytes:52428800}") int fileResponseMaxInMemoryBytes,
+                                @Value("${ai.python.internal-token:}") String internalToken) {
+        this.webClientBuilder = webClientBuilder;
+        this.objectMapper = objectMapper;
+        this.jwtUtil = jwtUtil;
+        this.systemConfigService = systemConfigService;
+        this.systemConfigRepository = systemConfigRepository;
+        this.langfuseConfigService = langfuseConfigService;
+        this.pythonBaseUrl = pythonBaseUrl;
+        this.timeoutSeconds = timeoutSeconds;
+        this.pptTimeoutSeconds = pptTimeoutSeconds;
+        this.fileResponseMaxInMemoryBytes = fileResponseMaxInMemoryBytes;
+        this.internalToken = internalToken == null ? "" : internalToken.trim();
+    }
+
+    public LlmChatResponse chat(LlmChatRequest request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        String requestedModel = resolveRequestedModel(request.getLlmModel(), request.getAgentName());
+        try {
+            return webClientBuilder.build()
+                    .post()
+                    .uri(buildUri("/internal/chat"))
+                    .headers(headers -> applyPythonHeaders(headers, authorization, userId, requestedModel))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(normalizePythonRequest(request))
+                    .retrieve()
+                    .bodyToMono(LlmChatResponse.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    public Object getRagCapabilities(String authorization) {
+        return getRagObject("/internal/rag/capabilities", authorization);
+    }
+
+    public GeneratedExportResponse downloadGeneratedExport(String storageKey, String pythonCapability) {
+        if (!StringUtils.hasText(storageKey) || !StringUtils.hasText(pythonCapability)) {
+            throw new BusinessException(Result.ERROR_CODE, "导出文件读取凭据无效");
+        }
+        String encodedStorageKey = UriUtils.encodePathSegment(storageKey, StandardCharsets.UTF_8);
+        try {
+            return buildFileResponseWebClient()
+                    .get()
+                    .uri(buildUri("/internal/rag/exports/" + encodedStorageKey))
+                    .header("X-AI-Export-Capability", pythonCapability)
+                    .headers(this::applyInternalToken)
+                    .accept(MediaType.APPLICATION_OCTET_STREAM)
+                    .exchangeToMono(response -> {
+                        int status = response.statusCode().value();
+                        if (status < 200 || status >= 300) {
+                            return response.releaseBody()
+                                    .then(Mono.error(exportDownloadException(status)));
+                        }
+                        long declaredLength = response.headers().contentLength().orElse(-1L);
+                        if (declaredLength > fileResponseMaxInMemoryBytes) {
+                            return response.releaseBody()
+                                    .then(Mono.error(new BusinessException(413, "导出文件超过允许大小")));
+                        }
+                        MediaType contentType = response.headers().contentType().orElse(null);
+                        return response.bodyToMono(byte[].class)
+                                .defaultIfEmpty(new byte[0])
+                                .map(bytes -> {
+                                    if (bytes.length > fileResponseMaxInMemoryBytes) {
+                                        throw new BusinessException(413, "导出文件超过允许大小");
+                                    }
+                                    return new GeneratedExportResponse(bytes, contentType, declaredLength);
+                                });
+                    })
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            if (hasCause(e, DataBufferLimitException.class)) {
+                throw new BusinessException(413, "导出文件超过允许大小");
+            }
+            throw new BusinessException(502, "Python 导出文件读取失败");
+        }
+    }
+
+    public Object getRagFramework(String authorization) {
+        return getRagObject("/internal/rag/framework", authorization);
+    }
+
+    public Object getRagAgents(String authorization) {
+        return withAgentEnabledState(getRagObject("/internal/rag/agents", authorization));
+    }
+
+    public Map<String, AgentDescriptor> getQuestionGenerationAgentCatalog(String authorization) {
+        Object source = withAgentEnabledState(getRagObject("/internal/rag/agents", authorization));
+        if (!(source instanceof Map<?, ?> sourceMap) || !(sourceMap.get("agents") instanceof List<?> agents)) {
+            return Map.of();
+        }
+        Map<String, String> modelBindings = loadActiveAgentModelBindings();
+        Map<String, AgentDescriptor> catalog = new HashMap<>();
+        for (Object agent : agents) {
+            if (!(agent instanceof Map<?, ?> agentMap)) {
+                continue;
+            }
+            String name = nullableText(agentMap.get("name"));
+            if (!StringUtils.hasText(name)) {
+                continue;
+            }
+            String role = nullableText(agentMap.get("role"));
+            boolean enabled = !Boolean.FALSE.equals(agentMap.get("enabled"));
+            String modelBinding = modelBindings.get(name);
+            catalog.put(name, new AgentDescriptor(
+                    name,
+                    StringUtils.hasText(role) ? role : null,
+                    enabled,
+                    StringUtils.hasText(modelBinding) ? modelBinding.trim() : null
+            ));
+        }
+        return catalog;
+    }
+
+    public String queryQuestionGeneration(QuestionGenerationPayload payload, String authorization) {
+        Map<String, Object> request = new HashMap<>();
+        request.put("agentName", payload.agentName());
+        request.put("input", payload.input());
+        request.put("metadata", Map.of("requestPurpose", "question_generation"));
+        if (payload.maxQuestions() != null) {
+            request.put("maxQuestions", payload.maxQuestions());
+        }
+        if (StringUtils.hasText(payload.difficulty())) {
+            request.put("difficulty", payload.difficulty());
+        }
+        Object response = queryRag(request, authorization);
+        if (response instanceof Map<?, ?> responseMap && responseMap.get("answer") instanceof String answer) {
+            return answer;
+        }
+        if (response instanceof String answer) {
+            return answer;
+        }
+        throw new BusinessException(Result.ERROR_CODE, "Python AI 服务未返回题库生成答案");
+    }
+
+    private Map<String, String> loadActiveAgentModelBindings() {
+        Map<String, String> bindings = new HashMap<>();
+        systemConfigRepository.findByConfigKeyStartingWithAndStatus(AGENT_MODEL_BINDING_PREFIX, 1)
+                .forEach(binding -> {
+                    String key = binding.getConfigKey();
+                    if (!StringUtils.hasText(key) || !key.endsWith(".model")
+                            || key.length() <= AGENT_MODEL_BINDING_PREFIX.length() + ".model".length()) {
+                        return;
+                    }
+                    String agentName = key.substring(
+                            AGENT_MODEL_BINDING_PREFIX.length(), key.length() - ".model".length()).trim();
+                    String modelBinding = nullableText(binding.getConfigValue());
+                    if (StringUtils.hasText(agentName) && StringUtils.hasText(modelBinding)) {
+                        bindings.put(agentName, modelBinding);
+                    }
+                });
+        return bindings;
+    }
+
+    private String nullableText(Object value) {
+        return value == null ? null : String.valueOf(value).trim();
+    }
+
+    public Object getRagAgent(String agentName, String authorization) {
+        return mergeAgentEnabledState(getRagObject("/internal/rag/agents/" + agentName, authorization), loadAgentToggles());
+    }
+
+    public Object updateRagAgentExampleInput(String agentName, Map<String, Object> request, String authorization) {
+        return putRagObject("/internal/rag/agents/" + agentName + "/example-input", request, authorization);
+    }
+
+    public Object getToolCacheStats(String authorization) {
+        return getRagObject("/internal/rag/tool-cache/stats", authorization);
+    }
+
+    public Object clearToolCache(String authorization) {
+        return deleteRagObject("/internal/rag/tool-cache", authorization);
+    }
+
+    public Object getModelProviders(String authorization) {
+        return getPythonAuthObject("/internal/models/providers", authorization, "Python 模型目录服务调用失败");
+    }
+
+    public Object queryRag(Map<String, Object> request, String authorization) {
+        String requestedModel = resolveRequestedModel(request);
+        boolean modelOptional = isModelOptionalRagQuery(request);
+        if (!modelOptional && !StringUtils.hasText(requestedModel)) {
+            throw new BusinessException(Result.ERROR_CODE, "请选择已测试成功的模型后再执行智能体");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        Map<String, Object> sanitized = sanitizeRagRequest(withAgentToggles(request, userId));
+        return postRagObject("/internal/rag/query", sanitized, authorization, requestedModel);
+    }
+
+    public Object queryRagAsSystem(Map<String, Object> request) {
+        String token = jwtUtil.generateToken("weekly-job-radar", 0L, "system");
+        return queryRag(request, "Bearer " + token);
+    }
+
+    public Object queryWeeklyJobRecommendations(String authorization) {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("input", "请输出近一周国内软件工程方向热度前五的具体岗位推荐。");
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("requestPurpose", "weekly_job_recommendation");
+        metadata.put("expectedToolName", WEEKLY_JOB_TOOL_NAME);
+        request.put("metadata", metadata);
+        String model = resolveAgentBoundModel(WEEKLY_JOB_AGENT_NAME);
+        if (!StringUtils.hasText(model)) {
+            model = resolveAgentBoundModel(DEFAULT_AGENT_NAME);
+        }
+        if (StringUtils.hasText(model)) {
+            request.put("llmModel", model);
+        }
+        if (StringUtils.hasText(authorization)) {
+            return queryRag(request, authorization);
+        }
+        return queryRagAsSystem(request);
+    }
+
+    /**
+     * AI 生成 Python 题目：模型解析按 生成智能体绑定 -> Leader 绑定 兜底，
+     * 未配置任何绑定时交由 queryRag 抛明确的模型配置错误。
+     */
+    public Object generatePythonProblems(Map<String, Object> request, String authorization) {
+        String model = resolveAgentBoundModel(GENERATOR_AGENT_NAME);
+        if (!StringUtils.hasText(model)) {
+            model = resolveAgentBoundModel(DEFAULT_AGENT_NAME);
+        }
+        if (StringUtils.hasText(model)) {
+            request.put("llmModel", model);
+        }
+        return queryRag(request, authorization);
+    }
+
+    public Object generatePptOutline(Map<String, Object> request, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/outlines", request, authorization,
+                requirePptGenerationModel());
+    }
+
+    public Object createPptOutlineTask(Map<String, Object> request, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/outlines/tasks", request, authorization,
+                requirePptGenerationModel());
+    }
+
+    public Object getPptOptions(String authorization) {
+        return getPythonAuthObject("/internal/rag/ppt-generation/options",
+                authorization, "PPT 配置查询失败");
+    }
+
+    public Object uploadPptSourceFile(MultipartFile file, String authorization) {
+        try {
+            String filename = StringUtils.hasText(file.getOriginalFilename())
+                    ? StringUtils.cleanPath(file.getOriginalFilename())
+                    : "material";
+            return postPptObject(
+                    "/internal/rag/ppt-generation/files",
+                    Map.of(
+                            "fileName", filename,
+                            "contentType", StringUtils.hasText(file.getContentType())
+                                    ? file.getContentType() : MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                            "contentBase64", Base64.getEncoder().encodeToString(file.getBytes())
+                    ),
+                    authorization,
+                    null
+            );
+        } catch (java.io.IOException e) {
+            throw new BusinessException(Result.ERROR_CODE, "PPT 资料文件读取失败");
+        }
+    }
+
+    public Object generatePptSlides(Map<String, Object> request, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/slides", request, authorization,
+                requirePptGenerationModel());
+    }
+
+    public Object renderPptPreview(Map<String, Object> request, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/previews", request, authorization, null);
+    }
+
+    public Object createPptSlidesTask(Map<String, Object> request, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/slides/tasks", request, authorization,
+                requirePptGenerationModel());
+    }
+
+    public Object createPptTask(Map<String, Object> request, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/tasks", request, authorization,
+                requirePptGenerationModel());
+    }
+
+    public Object getPptTask(String taskId, String authorization) {
+        return getPythonAuthObject("/internal/rag/ppt-generation/tasks/" + taskId,
+                authorization, "PPT 任务查询失败");
+    }
+
+    public Object cancelPptTask(String taskId, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/tasks/" + taskId + "/cancel",
+                Map.of(), authorization, null);
+    }
+
+    public Object retryPptTask(String taskId, String authorization) {
+        return postPptObject("/internal/rag/ppt-generation/tasks/" + taskId + "/retry",
+                Map.of(), authorization, requirePptGenerationModel());
+    }
+
+    public Object replacePptSlideImage(String taskId, Integer slideIndex,
+                                       Map<String, Object> request, String authorization) {
+        return postPptObject(
+                "/internal/rag/ppt-generation/tasks/" + taskId + "/slides/" + slideIndex + "/image",
+                request, authorization, null);
+    }
+
+    public GeneratedExportResponse downloadPptTemplateThumbnail(String templateId, String authorization) {
+        validateAuthorization(authorization);
+        if (!StringUtils.hasText(templateId) || !templateId.matches("[A-Za-z0-9._-]{1,120}")) {
+            throw new BusinessException(Result.ERROR_CODE, "PPT 模板编号无效");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        String encodedTemplateId = UriUtils.encodePathSegment(templateId, StandardCharsets.UTF_8);
+        try {
+            ResponseEntity<byte[]> response = buildFileResponseWebClient().get()
+                    .uri(buildUri("/internal/rag/ppt-generation/templates/" + encodedTemplateId + "/thumbnail"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .retrieve()
+                    .toEntity(byte[].class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+            if (response == null || response.getBody() == null) {
+                throw new BusinessException(502, "PPT 模板缩略图响应为空");
+            }
+            if (response.getBody().length > fileResponseMaxInMemoryBytes) {
+                throw new BusinessException(413, "PPT 模板缩略图超过允许大小");
+            }
+            MediaType contentType = response.getHeaders().getContentType();
+            return new GeneratedExportResponse(
+                    response.getBody(),
+                    contentType == null ? MediaType.IMAGE_PNG : contentType,
+                    response.getHeaders().getContentLength()
+            );
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(e.getStatusCode().value(),
+                    "PPT 模板缩略图读取失败: " + extractRemoteMessage(e));
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(502, "PPT 模板缩略图读取失败");
+        }
+    }
+
+    public GeneratedExportResponse downloadPptTemplateLayoutPreview(
+            String templateId, Integer slideIndex, String authorization) {
+        validateAuthorization(authorization);
+        if (!StringUtils.hasText(templateId) || !templateId.matches("[A-Za-z0-9._-]{1,120}")) {
+            throw new BusinessException(Result.ERROR_CODE, "PPT 模板编号无效");
+        }
+        if (slideIndex == null || slideIndex < 1 || slideIndex > 200) {
+            throw new BusinessException(Result.ERROR_CODE, "版式页码无效");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        String encodedTemplateId = UriUtils.encodePathSegment(templateId, StandardCharsets.UTF_8);
+        try {
+            // First request may trigger on-the-fly Chromium rendering for the
+            // whole template, so allow the longer PPT timeout here.
+            ResponseEntity<byte[]> response = buildFileResponseWebClient().get()
+                    .uri(buildUri("/internal/rag/ppt-generation/templates/" + encodedTemplateId
+                            + "/layout-previews/" + slideIndex))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .retrieve()
+                    .toEntity(byte[].class)
+                    .timeout(Duration.ofSeconds(pptTimeoutSeconds))
+                    .block();
+            if (response == null || response.getBody() == null) {
+                throw new BusinessException(502, "PPT 模板版式预览响应为空");
+            }
+            if (response.getBody().length > fileResponseMaxInMemoryBytes) {
+                throw new BusinessException(413, "PPT 模板版式预览超过允许大小");
+            }
+            MediaType contentType = response.getHeaders().getContentType();
+            return new GeneratedExportResponse(
+                    response.getBody(),
+                    contentType == null ? MediaType.IMAGE_PNG : contentType,
+                    response.getHeaders().getContentLength()
+            );
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(e.getStatusCode().value(),
+                    "PPT 模板版式预览读取失败: " + extractRemoteMessage(e));
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(502, "PPT 模板版式预览读取失败");
+        }
+    }
+
+    public GeneratedExportResponse downloadPptTaskArtifact(String artifactPath, String authorization) {
+        validateAuthorization(authorization);
+        if (!StringUtils.hasText(artifactPath) || artifactPath.contains("..")) {
+            throw new BusinessException(Result.ERROR_CODE, "PPT 文件路径无效");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            ResponseEntity<byte[]> response = buildFileResponseWebClient().get()
+                    .uri(buildUri("/internal/rag/ppt-generation/tasks/" + artifactPath))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .retrieve()
+                    .toEntity(byte[].class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+            if (response == null || response.getBody() == null) {
+                throw new BusinessException(502, "Python PPT 文件响应为空");
+            }
+            MediaType contentType = response.getHeaders().getContentType();
+            return new GeneratedExportResponse(response.getBody(),
+                    contentType == null ? MediaType.APPLICATION_OCTET_STREAM : contentType,
+                    response.getHeaders().getContentLength());
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(e.getStatusCode().value(), "PPT 文件读取失败: " + extractRemoteMessage(e));
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(502, "PPT 文件读取失败: " + e.getMessage());
+        }
+    }
+
+    private String requirePptGenerationModel() {
+        String model = firstText(
+                resolveAgentBoundModel("ppt_outline_agent"),
+                resolveAgentBoundModel(DEFAULT_AGENT_NAME),
+                firstTestedTextConfigPrefix(),
+                firstCompleteTextConfigPrefix(),
+                hasCompleteTextConfig(LEGACY_TEXT_CONFIG_PREFIX) && isFreeTextConfig(LEGACY_TEXT_CONFIG_PREFIX)
+                        ? LEGACY_TEXT_CONFIG_PREFIX : ""
+        );
+        if (!StringUtils.hasText(model)) {
+            throw new BusinessException(Result.ERROR_CODE, "PPT 生成模型尚未配置");
+        }
+        return model;
+    }
+
+    private Object postPptObject(String path,
+                                 Map<String, Object> request,
+                                 String authorization,
+                                 String requestedModel) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .post()
+                    .uri(buildUri(path))
+                    .headers(headers -> {
+                        if (StringUtils.hasText(requestedModel)) {
+                            applyPythonHeaders(headers, authorization, userId, requestedModel);
+                        } else {
+                            applyPythonAuthHeaders(headers, authorization, userId);
+                        }
+                    })
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(pptTimeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            int remoteStatus = e.getStatusCode().value();
+            int status = remoteStatus >= 400 && remoteStatus < 500 ? remoteStatus : 502;
+            throw new BusinessException(status, "PPT AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(502, "PPT AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    public SseEmitter streamRag(Map<String, Object> request, String authorization) {
+        return streamRag(request, authorization, null);
+    }
+
+    public SseEmitter streamRag(Map<String, Object> request,
+                                String authorization,
+                                SseEventHandler eventHandler) {
+        String requestedModel = resolveStreamRagModel(request);
+        boolean modelOptional = isModelOptionalRagQuery(request);
+        if (!modelOptional && !StringUtils.hasText(requestedModel)) {
+            throw new BusinessException(
+                    Result.ERROR_CODE,
+                    "Leader 未配置可用文本模型，请在后台为 leader_agent 绑定已测试模型，或配置默认文本模型。"
+            );
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        Map<String, Object> sanitized = sanitizeRagRequest(withAgentToggles(request, userId));
+        return streamPythonObject(
+                "/internal/rag/query/stream",
+                sanitized,
+                authorization,
+                requestedModel,
+                eventHandler
+        );
+    }
+
+    private boolean isAdminDirectToolTest(Map<String, Object> request) {
+        if (request == null) {
+            return false;
+        }
+        Object rawMetadata = request.get("metadata");
+        if (!(rawMetadata instanceof Map<?, ?> metadata)) {
+            return false;
+        }
+        return "admin_tool_console".equals(String.valueOf(metadata.get("testFrom")))
+                && Boolean.TRUE.equals(metadata.get("directToolTest"));
+    }
+
+    private boolean isModelOptionalRagQuery(Map<String, Object> request) {
+        if (isAdminDirectToolTest(request)) {
+            Object rawMetadata = request.get("metadata");
+            if (rawMetadata instanceof Map<?, ?> metadata
+                    && "image_stitching_tool".equals(String.valueOf(metadata.get("expectedToolName")))) {
+                return true;
+            }
+        }
+        return isLocalImageStitchingRequest(request);
+    }
+
+    private boolean isLocalImageStitchingRequest(Map<String, Object> request) {
+        if (request == null) {
+            return false;
+        }
+        Object rawMetadata = request.get("metadata");
+        if (rawMetadata instanceof Map<?, ?> metadata
+                && "image_stitching_tool".equals(String.valueOf(metadata.get("expectedToolName")))) {
+            String testFrom = String.valueOf(metadata.get("testFrom"));
+            if ("admin_agent_console".equals(testFrom)
+                    || ("admin_tool_console".equals(testFrom) && Boolean.TRUE.equals(metadata.get("directToolTest")))) {
+                return true;
+            }
+        }
+        for (String field : List.of("imageDataUrls", "images", "imageUrls")) {
+            Object rawImages = request.get(field);
+            if (rawImages instanceof List<?> images && images.size() >= 2) {
+                return true;
+            }
+        }
+        Object rawAttachments = request.get("attachments");
+        if (!(rawAttachments instanceof List<?> attachments)) {
+            return false;
+        }
+        long directImageCount = attachments.stream().filter(this::isImageAttachment).count();
+        return directImageCount >= 2;
+    }
+
+    private boolean isImageAttachment(Object rawAttachment) {
+        if (!(rawAttachment instanceof Map<?, ?> attachment)) {
+            return false;
+        }
+        String mimeType = firstAttachmentText(attachment, "mimeType", "contentType", "type");
+        if (mimeType.toLowerCase(Locale.ROOT).startsWith("image/")) {
+            return true;
+        }
+        String name = firstAttachmentText(attachment, "name", "fileName");
+        return List.of(".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff")
+                .stream().anyMatch(name.toLowerCase(Locale.ROOT)::endsWith);
+    }
+
+    private String firstAttachmentText(Map<?, ?> attachment, String... keys) {
+        for (String key : keys) {
+            Object value = attachment.get(key);
+            if (value != null && StringUtils.hasText(String.valueOf(value))) {
+                return String.valueOf(value).trim();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Learning workflow payloads already contain a server-built, closed metadata contract.
+     * Do not mix campus agent/tool toggles into that contract and never accept a client model.
+     */
+    public SseEmitter streamLearningWorkflow(Map<String, Object> request,
+                                             String authorization,
+                                             SseEventHandler eventHandler) {
+        String requestedModel = resolveAgentBoundModel(DEFAULT_AGENT_NAME);
+        if (!StringUtils.hasText(requestedModel)) {
+            throw new BusinessException(Result.ERROR_CODE, "学习工作流模型尚未配置");
+        }
+        Map<String, Object> sanitized = sanitizeRagRequest(request);
+        return streamPythonObject(
+                "/internal/rag/query/stream",
+                sanitized,
+                authorization,
+                requestedModel,
+                eventHandler
+        );
+    }
+
+    public Object convertPdf(MultipartFile file, String targetFormat, String authorization) {
+        return convertPdf(file, targetFormat, authorization, "image");
+    }
+
+    public Object testFileContentTool(String toolName, MultipartFile file, String authorization) {
+        validateAuthorization(authorization);
+        String normalizedTool = String.valueOf(toolName == null ? "" : toolName).trim();
+        Set<String> allowedExtensions = FILE_CONTENT_TOOL_EXTENSIONS.get(normalizedTool);
+        if (allowedExtensions == null) {
+            throw new BusinessException(Result.BAD_REQUEST_CODE, "不支持的文件提取工具");
+        }
+        if (!isToolEnabled(normalizedTool, loadToolToggles())) {
+            throw new BusinessException(403, "该工具已在智能体设置中关闭");
+        }
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(Result.BAD_REQUEST_CODE, "请选择测试文件");
+        }
+        if (file.getSize() > FILE_CONTENT_TOOL_TEST_MAX_BYTES) {
+            throw new BusinessException(413, "测试文件不能超过 25MB");
+        }
+        String filename = StringUtils.hasText(file.getOriginalFilename())
+                ? StringUtils.cleanPath(file.getOriginalFilename())
+                : "document";
+        String lowerName = filename.toLowerCase(Locale.ROOT);
+        boolean extensionMatched = allowedExtensions.stream().anyMatch(lowerName::endsWith);
+        if (!extensionMatched) {
+            throw new BusinessException(Result.BAD_REQUEST_CODE,
+                    "文件格式与所选工具不匹配，支持格式: " + String.join("、", allowedExtensions));
+        }
+
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            Map<String, Object> payload = Map.of(
+                    "toolName", normalizedTool,
+                    "fileName", filename,
+                    "contentBase64", Base64.getEncoder().encodeToString(file.getBytes())
+            );
+            return buildFileResponseWebClient()
+                    .post()
+                    .uri(buildUri("/internal/rag/tools/file-content/test"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(e.getStatusCode().value(), "文件工具测试失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "文件工具测试失败: " + e.getMessage());
+        }
+    }
+
+    public Object convertPdf(MultipartFile file, String targetFormat, String authorization, String convertMode) {
+        validateAuthorization(authorization);
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(Result.ERROR_CODE, "PDF 文件不能为空");
+        }
+        String filename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "document.pdf";
+        if (!filename.toLowerCase().endsWith(".pdf")) {
+            throw new BusinessException(Result.ERROR_CODE, "仅支持上传 PDF 文件");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("fileName", filename);
+            payload.put("targetFormat", targetFormat == null ? "" : targetFormat);
+            payload.put("contentBase64", Base64.getEncoder().encodeToString(file.getBytes()));
+            payload.put("convertMode", StringUtils.hasText(convertMode) ? convertMode : "image");
+            return buildFileResponseWebClient()
+                    .post()
+                    .uri(buildUri("/internal/rag/pdf/convert"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    public Object convertPpt(MultipartFile file, String authorization) {
+        return convertPpt(file, authorization, "reflow");
+    }
+
+    public Object convertPpt(MultipartFile file, String authorization, String convertMode) {
+        validateAuthorization(authorization);
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(Result.ERROR_CODE, "PPTX 文件不能为空");
+        }
+        String filename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "presentation.pptx";
+        if (!filename.toLowerCase().endsWith(".pptx")) {
+            throw new BusinessException(Result.ERROR_CODE, "当前仅支持上传 PPTX 文件；请先将 PPT 另存为 PPTX");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("fileName", filename);
+            payload.put("contentBase64", Base64.getEncoder().encodeToString(file.getBytes()));
+            payload.put("convertMode", StringUtils.hasText(convertMode) ? convertMode : "reflow");
+            return buildFileResponseWebClient()
+                    .post()
+                    .uri(buildUri("/internal/rag/ppt/convert"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * PPT/PPTX 转 PDF：转发到 Python /internal/rag/ppt/to-pdf。
+     */
+    public Object convertPptToPdf(MultipartFile file, String authorization) {
+        validateAuthorization(authorization);
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(Result.ERROR_CODE, "PPT 文件不能为空");
+        }
+        String filename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "presentation.pptx";
+        String lower = filename.toLowerCase();
+        if (!lower.endsWith(".ppt") && !lower.endsWith(".pptx")) {
+            throw new BusinessException(Result.ERROR_CODE, "仅支持上传 PPT/PPTX 文件");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            Map<String, Object> payload = Map.of(
+                    "fileName", filename,
+                    "contentBase64", Base64.getEncoder().encodeToString(file.getBytes())
+            );
+            return buildFileResponseWebClient()
+                    .post()
+                    .uri(buildUri("/internal/rag/ppt/to-pdf"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * DOCX 转 PDF：转发到 Python /internal/rag/docx/to-pdf。
+     */
+    public Object convertDocxToPdf(MultipartFile file, String authorization) {
+        validateAuthorization(authorization);
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(Result.ERROR_CODE, "DOCX 文件不能为空");
+        }
+        String filename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "document.docx";
+        if (!filename.toLowerCase().endsWith(".docx")) {
+            throw new BusinessException(Result.ERROR_CODE, "仅支持上传 DOCX 文件");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            Map<String, Object> payload = Map.of(
+                    "fileName", filename,
+                    "contentBase64", Base64.getEncoder().encodeToString(file.getBytes())
+            );
+            return buildFileResponseWebClient()
+                    .post()
+                    .uri(buildUri("/internal/rag/docx/to-pdf"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * DOCX 转 PPT：转发到 Python /internal/rag/docx/to-ppt。
+     */
+    public Object convertDocxToPpt(MultipartFile file, String authorization) {
+        return convertDocxToPpt(file, authorization, "smart");
+    }
+
+    public Object convertDocxToPpt(MultipartFile file, String authorization, String convertMode) {
+        validateAuthorization(authorization);
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(Result.ERROR_CODE, "DOCX 文件不能为空");
+        }
+        String filename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "document.docx";
+        if (!filename.toLowerCase().endsWith(".docx")) {
+            throw new BusinessException(Result.ERROR_CODE, "仅支持上传 DOCX 文件");
+        }
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("fileName", filename);
+            payload.put("contentBase64", Base64.getEncoder().encodeToString(file.getBytes()));
+            payload.put("convertMode", StringUtils.hasText(convertMode) ? convertMode : "smart");
+            return buildFileResponseWebClient()
+                    .post()
+                    .uri(buildUri("/internal/rag/docx/to-ppt"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * PDF 转 PPTX：复用 PDF 转换代理，目标格式固定为 pptx。
+     */
+    public Object convertPdfToPpt(MultipartFile file, String authorization) {
+        return convertPdfToPpt(file, authorization, "image");
+    }
+
+    public Object convertPdfToPpt(MultipartFile file, String authorization, String convertMode) {
+        return convertPdf(file, "pptx", authorization, convertMode);
+    }
+
+    public Object getTextToSqlSchema(String authorization) {
+        return getRagObject("/internal/rag/text-to-sql/schema", authorization);
+    }
+
+    public Object executeTextToSql(Map<String, Object> request, String authorization) {
+        return postRagObject("/internal/rag/text-to-sql/execute", request, authorization);
+    }
+
+    public Object generateImage(Map<String, Object> request, String authorization) {
+        return postImageObject("/internal/images/generate", request, authorization);
+    }
+
+    public Object generateImagesBatch(Map<String, Object> request, String authorization) {
+        return postImageObject("/internal/images/batch", request, authorization);
+    }
+
+    public Object getImageTask(String taskId, String authorization) {
+        return getImageObject("/internal/images/tasks/" + taskId, authorization);
+    }
+
+    public Object generateVideo(Map<String, Object> request, String authorization) {
+        return postVideoObject("/internal/videos/generate", request, authorization);
+    }
+
+    public Object testVisionModel(Map<String, Object> request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .post()
+                    .uri(buildUri("/internal/models/vision/test"))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 视觉理解服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 视觉理解服务调用失败: " + e.getMessage());
+        }
+    }
+
+    public Object generateVideosBatch(Map<String, Object> request, String authorization) {
+        return postVideoObject("/internal/videos/batch", request, authorization);
+    }
+
+    /**
+     * 调用 Python 架构图生成服务，返回 { title, style, nodes, edges } JSON。
+     * 复用 AI 图表文本模型配置，并向 Python 透传完整 X-AI-* 运行时配置。
+     */
+    public Object generateArchitecture(Map<String, Object> request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        String requestedModel = requireStrictAgentModelConfigPrefix(ARCHITECTURE_AGENT_NAME);
+        if (!StringUtils.hasText(requestedModel)) {
+            throw new BusinessException(
+                    Result.ERROR_CODE,
+                    "架构图智能体未绑定文本模型，请在系统配置中维护 ai.agent-bindings."
+                            + ARCHITECTURE_AGENT_NAME + ".model"
+            );
+        }
+        try {
+            return webClientBuilder.build()
+                    .post()
+                    .uri(buildUri("/internal/architecture/generate"))
+                    .headers(headers -> applyPythonHeaders(headers, authorization, userId, requestedModel))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 架构图生成服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 架构图生成服务调用失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 调用 Python 学习计划拆解服务，返回 { goal, tasks } 纯 JSON。
+     * 模型优先级：ai.agent-bindings.goal_decomposition_agent.model -> 默认智能体绑定 -> 文本模型配置。
+     */
+    public Object generateGoalDecomposition(Map<String, Object> request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        String requestedModel = resolveTextModelConfigPrefix(GOAL_DECOMPOSITION_AGENT_NAME);
+        if (!StringUtils.hasText(requestedModel)) {
+            throw new BusinessException(
+                    Result.ERROR_CODE,
+                    "AI 文本模型未配置，请在系统配置中维护 ai.service.text.* 或 ai.agent-bindings."
+                            + GOAL_DECOMPOSITION_AGENT_NAME + ".model"
+            );
+        }
+        try {
+            return webClientBuilder.build()
+                    .post()
+                    .uri(buildUri("/internal/goal-decomposition/decompose"))
+                    .headers(headers -> applyPythonHeaders(headers, authorization, userId, requestedModel))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 目标拆解服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 目标拆解服务调用失败: " + e.getMessage());
+        }
+    }
+
+    public Object getVideoTask(String taskId, String authorization) {
+        return getVideoObject("/internal/videos/tasks/" + taskId, authorization);
+    }
+
+    public SseEmitter streamChat(LlmChatRequest request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        String requestedModel = resolveRequestedModel(request.getLlmModel(), request.getAgentName());
+
+        return streamPythonObject("/internal/chat/stream", request, authorization, userId, requestedModel, null);
+    }
+
+    /**
+     * AI 辅助编程（LeetCode 式：提示/思路/代码解释/报错分析）流式代理。
+     * 模型优先级：请求体 llmModel -> ai.agent-bindings.python_coding_tutor_agent.model -> leader 绑定。
+     */
+    public SseEmitter streamCodingAssist(Map<String, Object> request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        String requestedModel = resolveCodingAssistModel(request);
+        return streamPythonObject("/internal/coding/assist/stream", request, authorization, userId, requestedModel, null);
+    }
+
+    private String resolveCodingAssistModel(Map<String, Object> request) {
+        if (request != null) {
+            Object llmModel = request.get("llmModel");
+            if (llmModel != null && StringUtils.hasText(String.valueOf(llmModel))) {
+                return String.valueOf(llmModel).trim();
+            }
+        }
+        String model = resolveAgentBoundModel(CODING_TUTOR_AGENT_NAME);
+        if (!StringUtils.hasText(model)) {
+            model = resolveAgentBoundModel(DEFAULT_AGENT_NAME);
+        }
+        if (!StringUtils.hasText(model)) {
+            throw new BusinessException(Result.ERROR_CODE, "请先配置 AI 模型后再使用 AI 助手");
+        }
+        return model;
+    }
+
+    private SseEmitter streamPythonObject(String path, Object request, String authorization, String requestedModel) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        return streamPythonObject(path, request, authorization, userId, requestedModel, (SseEventHandler) null);
+    }
+
+    private SseEmitter streamPythonObject(String path,
+                                         Object request,
+                                         String authorization,
+                                         String requestedModel,
+                                         SseEventHandler eventHandler) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        return streamPythonObject(path, request, authorization, userId, requestedModel, eventHandler);
+    }
+
+    private SseEmitter streamPythonObject(String path,
+                                         Object request,
+                                         String authorization,
+                                         Long userId,
+                                         String requestedModel,
+                                         SseEventHandler eventHandler) {
+        SseEmitter emitter = new SseEmitter(0L);
+        CompletableFuture.runAsync(() -> {
+            try {
+                log.info("start python stream relay path={}", path);
+                Object normalizedRequest = normalizePythonRequest(request);
+                webClientBuilder.build()
+                        .post()
+                        .uri(buildUri(path))
+                        .headers(headers -> applyPythonHeaders(headers, authorization, userId, requestedModel))
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(normalizedRequest)
+                        .retrieve()
+                        .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {})
+                        .timeout(Duration.ofSeconds(timeoutSeconds))
+                        .doOnNext(event -> relaySseEvent(event, emitter, eventHandler))
+                        .blockLast();
+                log.info("python stream relay completed path={}", path);
+                emitter.complete();
+            } catch (Exception e) {
+                log.error("python stream relay failed path={} errorType={}", path, e.getClass().getSimpleName());
+                String userMessage = resolveStreamErrorMessage(e);
+                Map<String, Object> structuredError = buildStreamErrorPayload(e);
+                // Send error as JSON string to avoid Content-Type conflict
+                String errorMsg;
+                try {
+                    errorMsg = objectMapper.writeValueAsString(structuredError);
+                } catch (JsonProcessingException jsonEx) {
+                    errorMsg = "{\"message\":\"Python AI 流式服务暂时不可用，请稍后再试。\"}";
+                }
+                boolean relay = eventHandler == null;
+                if (eventHandler != null) {
+                    try {
+                        Map<String, Object> errorPayload = buildStreamErrorPayload(e);
+                        relay = eventHandler.handle("error", errorPayload);
+                    } catch (Exception handlerError) {
+                        log.error("python stream failure handler rejected errorType={}",
+                                handlerError.getClass().getSimpleName());
+                        relay = false;
+                    }
+                }
+                if (relay) {
+                    try {
+                        emitter.send(SseEmitter.event().name("error").data(errorMsg));
+                    } catch (Exception ignored) {
+                    }
+                }
+                emitter.complete();
+            }
+        });
+        return emitter;
+    }
+
+    void relaySseEvent(ServerSentEvent<String> sourceEvent,
+                       SseEmitter emitter,
+                       SseEventHandler eventHandler) {
+        String eventName = safeSseEventName(sourceEvent.event());
+        String rawData = sourceEvent.data();
+        Object payload = parsePayload(rawData);
+        if (eventHandler != null && !eventHandler.handle(eventName, payload)) {
+            return;
+        }
+    
+        log.info("relay sse event event={}", eventName);
+    
+        try {
+            // Convert payload to JSON string for proper SSE formatting
+            String jsonPayload = objectMapper.writeValueAsString(payload);
+            emitter.send(SseEmitter.event().name(eventName).data(jsonPayload));
+        } catch (Exception e) {
+            throw new RuntimeException("SSE 事件透传失败：" + e.getMessage(), e);
+        }
+    }
+
+    static String safeSseEventName(String value) {
+        return StringUtils.hasText(value) && SAFE_SSE_EVENT_NAME.matcher(value).matches()
+                ? value : "message";
+    }
+
+    private void validateAuthorization(String authorization) {
+        if (!StringUtils.hasText(authorization)) {
+            throw new BusinessException(Result.UNAUTHORIZED_CODE, "未登录或Token无效");
+        }
+    }
+
+    private Object getRagObject(String path, String authorization) {
+        return getPythonAuthObject(path, authorization, "Python AI 服务调用失败");
+    }
+
+    private Object getPythonAuthObject(String path, String authorization, String errorPrefix) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            // 使用大缓冲 client：/internal/rag/agents 等目录接口会返回全部智能体的 prompt/skill/contract
+            // 全文（含编程辅导等新 agent 后实测 269KB），超过 WebClient 默认 256KB 上限会抛
+            // DataBufferLimitException，故此处统一放宽到 file-response-max-in-memory-bytes。
+            return buildFileResponseWebClient()
+                    .get()
+                    .uri(buildUri(path))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, errorPrefix + ": " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            if (isConnectionRefused(e)) {
+                String message = errorPrefix.startsWith("Python 模型目录服务")
+                        ? "AI模型服务未启动，请启动Python模型服务"
+                        : errorPrefix + "：AI模型服务未启动，请启动Python模型服务";
+                throw new BusinessException(Result.ERROR_CODE, message);
+            }
+            throw new BusinessException(Result.ERROR_CODE, errorPrefix + ": " + e.getMessage());
+        }
+    }
+
+    private boolean isConnectionRefused(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof java.net.ConnectException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null) {
+                String normalized = message.toLowerCase(java.util.Locale.ROOT);
+                if (normalized.contains("connection refused")
+                        || normalized.contains("getsockopt")
+                        || normalized.contains("failed to connect")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private Object postRagObject(String path, Map<String, Object> request, String authorization) {
+        return postRagObject(path, request, authorization, null);
+    }
+
+    private Object postRagObject(String path, Map<String, Object> request, String authorization, String requestedModel) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            WebClient client = path != null && path.startsWith("/internal/rag/query")
+                    ? buildFileResponseWebClient()
+                    : webClientBuilder.build();
+            return client
+                    .post()
+                    .uri(buildUri(path))
+                    .headers(headers -> {
+                        if (StringUtils.hasText(requestedModel)) {
+                            applyPythonHeaders(headers, authorization, userId, requestedModel);
+                        } else {
+                            applyPythonAuthHeaders(headers, authorization, userId);
+                        }
+                    })
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            if (hasCause(e, DataBufferLimitException.class)) {
+                throw new BusinessException(413, "AI 响应体超过允许大小，请减少测试图片数量或尺寸后重试");
+            }
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    private Object putRagObject(String path, Map<String, Object> request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .put()
+                    .uri(buildUri(path))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    private Object deleteRagObject(String path, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .delete()
+                    .uri(buildUri(path))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python AI 服务调用失败: " + e.getMessage());
+        }
+    }
+
+    private Object getImageObject(String path, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .get()
+                    .uri(buildUri(path))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 图片生成服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 图片生成服务调用失败: " + e.getMessage());
+        }
+    }
+
+    private Object postImageObject(String path, Map<String, Object> request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .post()
+                    .uri(buildUri(path))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 图片生成服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 图片生成服务调用失败: " + e.getMessage());
+        }
+    }
+
+    private Object getVideoObject(String path, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .get()
+                    .uri(buildUri(path))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 视频生成服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 视频生成服务调用失败: " + e.getMessage());
+        }
+    }
+
+    private Object postVideoObject(String path, Map<String, Object> request, String authorization) {
+        validateAuthorization(authorization);
+        String token = normalizeBearerToken(authorization);
+        Long userId = extractUserId(token);
+        try {
+            return webClientBuilder.build()
+                    .post()
+                    .uri(buildUri(path))
+                    .headers(headers -> applyPythonAuthHeaders(headers, authorization, userId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request == null ? Map.of() : request)
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 视频生成服务调用失败: " + extractRemoteMessage(e));
+        } catch (Exception e) {
+            throw new BusinessException(Result.ERROR_CODE, "Python 视频生成服务调用失败: " + e.getMessage());
+        }
+    }
+
+    private Long extractUserId(String token) {
+        try {
+            return jwtUtil.getUserIdFromToken(token);
+        } catch (Exception e) {
+            throw new BusinessException(Result.UNAUTHORIZED_CODE, "未登录或Token无效");
+        }
+    }
+
+    private String normalizeBearerToken(String authorization) {
+        if (authorization.startsWith("Bearer ")) {
+            return authorization.substring(7);
+        }
+        return authorization;
+    }
+
+    private String buildUri(String path) {
+        String base = pythonBaseUrl.endsWith("/") ? pythonBaseUrl.substring(0, pythonBaseUrl.length() - 1) : pythonBaseUrl;
+        return base + path;
+    }
+
+    private WebClient buildFileResponseWebClient() {
+        ExchangeStrategies strategies = ExchangeStrategies.builder()
+                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(fileResponseMaxInMemoryBytes))
+                .build();
+        return WebClient.builder()
+                .exchangeStrategies(strategies)
+                .build();
+    }
+
+    private BusinessException exportDownloadException(int status) {
+        return switch (status) {
+            case 404 -> new BusinessException(404, "导出文件不存在");
+            case 409 -> new BusinessException(409, "导出文件完整性校验失败");
+            case 410 -> new BusinessException(410, "导出文件已过期");
+            case 413 -> new BusinessException(413, "导出文件超过允许大小");
+            default -> new BusinessException(502, "Python 导出文件读取失败");
+        };
+    }
+
+    private boolean hasCause(Throwable error, Class<? extends Throwable> type) {
+        Throwable current = error;
+        while (current != null) {
+            if (type.isInstance(current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private String resolveStreamFailurePhase(Exception error) {
+        String message = resolveStreamErrorMessage(error).toLowerCase(Locale.ROOT);
+        if (message.contains("模型") || message.contains("model")) {
+            return "模型配置";
+        }
+        if (message.contains("localdatetime") || message.contains("序列化")) {
+            return "请求序列化";
+        }
+        if (message.contains("buffer") || message.contains("响应体")) {
+            return "响应传输";
+        }
+        return "Java 代理";
+    }
+
+    private Map<String, Object> buildStreamErrorPayload(Exception error) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("message", resolveStreamErrorMessage(error));
+        payload.put("failurePhase", resolveStreamFailurePhase(error));
+        payload.put("failureLocation", "java_proxy");
+        payload.put("failureStage", "java_proxy");
+        payload.put("agentName", DEFAULT_AGENT_NAME);
+        payload.put("failedAgent", DEFAULT_AGENT_NAME);
+        payload.put("stage", "failed");
+        payload.put("status", "failed");
+        return payload;
+    }
+
+    private String resolveStreamRagModel(Map<String, Object> request) {
+        String resolved = resolveRequestedModel(request);
+        if (StringUtils.hasText(resolved)) {
+            return resolved;
+        }
+        String agentName = DEFAULT_AGENT_NAME;
+        if (request != null && request.get("agentName") != null) {
+            agentName = String.valueOf(request.get("agentName")).trim();
+        }
+        return resolveTextModelConfigPrefix(agentName);
+    }
+
+    private String resolveStreamErrorMessage(Exception error) {
+        if (error instanceof BusinessException businessException
+                && StringUtils.hasText(businessException.getMessage())) {
+            return businessException.getMessage();
+        }
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof BusinessException businessException
+                    && StringUtils.hasText(businessException.getMessage())) {
+                return businessException.getMessage();
+            }
+            String message = current.getMessage();
+            if (StringUtils.hasText(message)) {
+                if (message.contains("LocalDateTime")) {
+                    return "请求上下文包含无法序列化的时间字段，请刷新页面后重试。";
+                }
+                if (message.contains("DataBufferLimitException") || message.contains("max-in-memory-size")) {
+                    return "AI 响应体超过允许大小，请减少附件数量或尺寸后重试。";
+                }
+            }
+            current = current.getCause();
+        }
+        return "Python AI 流式服务暂时不可用，请稍后再试。";
+    }
+
+    private Object normalizePythonRequest(Object request) {
+        if (request == null) {
+            return request;
+        }
+        try {
+            Map<String, Object> map = objectMapper.convertValue(request, new com.fasterxml.jackson.core.type.TypeReference<>() {});
+            if (map == null) {
+                return request;
+            }
+            List<String> listFields = List.of("imageUrls", "images", "imageDataUrls", "attachments");
+            for (String field : listFields) {
+                if (!map.containsKey(field) || map.get(field) == null) {
+                    map.put(field, List.of());
+                }
+            }
+            return map;
+        } catch (Exception e) {
+            log.warn("normalize python request failed, use original request", e);
+            return request;
+        }
+    }
+
+    private void applyPythonHeaders(HttpHeaders headers, String authorization, Long userId, String requestedModel) {
+        String configPrefix = resolveConfigPrefix(requestedModel);
+        applyPythonAuthHeaders(headers, authorization, userId);
+        headers.set("X-AI-Provider", requireAiConfig(configPrefix, "provider", "模型服务商"));
+        headers.set("X-AI-Base-Url", requireAiConfig(configPrefix, "base-url", "模型服务地址"));
+        headers.set("X-AI-Api-Key", requireAiConfig(configPrefix, "api-key", "模型服务密钥"));
+        String provider = requireAiConfig(configPrefix, "provider", "模型服务商");
+        String configuredModel = requireAiConfig(configPrefix, "model", "模型 ID");
+        String model = AiModelPolicy.effectiveFreeTextModel(provider, configuredModel);
+        if (!StringUtils.hasText(model)) {
+            throw new BusinessException(
+                    Result.ERROR_CODE,
+                    "当前文本模型不在免费额度清单内，请在模型绑定中改用 " + AiModelPolicy.defaultTextModel()
+            );
+        }
+        headers.set("X-AI-Model", model);
+    }
+
+    private void applyPythonAuthHeaders(HttpHeaders headers, String authorization, Long userId) {
+        headers.set(HttpHeaders.AUTHORIZATION, authorization);
+        headers.set("X-User-Id", userId.toString());
+        applyInternalToken(headers);
+        langfuseConfigService.applyPythonHeaders(headers);
+    }
+
+    private void applyInternalToken(HttpHeaders headers) {
+        if (StringUtils.hasText(internalToken)) {
+            headers.set("X-AI-Internal-Token", internalToken);
+        }
+    }
+
+    private String resolveRequestedModel(Map<String, Object> request) {
+        if (request == null || request.isEmpty()) {
+            return resolveAgentBoundModel(null);
+        }
+        Object llmModel = request.get("llmModel");
+        if (llmModel != null && StringUtils.hasText(String.valueOf(llmModel))) {
+            return String.valueOf(llmModel).trim();
+        }
+        Object xAiModel = request.get("xAiModel");
+        if (xAiModel != null && StringUtils.hasText(String.valueOf(xAiModel))) {
+            return String.valueOf(xAiModel).trim();
+        }
+        Object agentName = request.get("agentName");
+        return resolveAgentBoundModel(agentName == null ? null : String.valueOf(agentName));
+    }
+
+    private String resolveRequestedModel(String requestedModel, String agentName) {
+        if (StringUtils.hasText(requestedModel)) {
+            return requestedModel.trim();
+        }
+        String boundModel = resolveAgentBoundModel(agentName);
+        if (!StringUtils.hasText(boundModel)
+                && RESUME_POLISH_EXPAND_AGENT_NAME.equals(agentName)) {
+            return resolveAgentBoundModel(RESUME_EDIT_AGENT_NAME);
+        }
+        return boundModel;
+    }
+
+    private String resolveAgentBoundModel(String agentName) {
+        String normalizedAgent = StringUtils.hasText(agentName) ? agentName.trim() : DEFAULT_AGENT_NAME;
+        String key = AGENT_MODEL_BINDING_PREFIX + normalizedAgent + ".model";
+        String value = systemConfigService.getValue(key, "");
+        if (!StringUtils.hasText(value) || !isFreeTextConfig(value.trim())) {
+            return null;
+        }
+        return value.trim();
+    }
+
+    private String resolveArchitectureModelConfigPrefix() {
+        return requireStrictAgentModelConfigPrefix(ARCHITECTURE_AGENT_NAME);
+    }
+
+    private String requireStrictAgentModelConfigPrefix(String agentName) {
+        String configPrefix = resolveAgentBoundModel(agentName);
+        if (!StringUtils.hasText(configPrefix) || !hasCompleteTextConfig(configPrefix)) {
+            return "";
+        }
+        return configPrefix;
+    }
+
+    private String resolveTextModelConfigPrefix(String agentName) {
+        return firstText(
+                resolveAgentBoundModel(agentName),
+                resolveAgentBoundModel(DEFAULT_AGENT_NAME),
+                firstTestedTextConfigPrefix(),
+                firstCompleteTextConfigPrefix(),
+                hasCompleteTextConfig(LEGACY_TEXT_CONFIG_PREFIX) && isFreeTextConfig(LEGACY_TEXT_CONFIG_PREFIX)
+                        ? LEGACY_TEXT_CONFIG_PREFIX : ""
+        );
+    }
+
+    private boolean hasCompleteTextConfig(String configPrefix) {
+        return StringUtils.hasText(systemConfigService.getValue(configPrefix + ".provider", ""))
+                && StringUtils.hasText(systemConfigService.getValue(configPrefix + ".api-key", ""))
+                && StringUtils.hasText(systemConfigService.getValue(configPrefix + ".base-url", ""))
+                && StringUtils.hasText(systemConfigService.getValue(configPrefix + ".model", ""));
+    }
+
+    private String firstTestedTextConfigPrefix() {
+        return systemConfigRepository.findByConfigKeyStartingWithAndStatus("ai.service.text.", 1)
+                .stream()
+                .filter(config -> config.getConfigKey() != null && config.getConfigKey().endsWith(".tested-fingerprint"))
+                .filter(config -> StringUtils.hasText(config.getConfigValue()))
+                .map(config -> removeSuffix(config.getConfigKey(), ".tested-fingerprint"))
+                .filter(this::hasCompleteTextConfig)
+                .filter(this::isFreeTextConfig)
+                .sorted(Comparator.comparingInt(this::textConfigPriority).thenComparing(String::toString))
+                .findFirst()
+                .orElse("");
+    }
+
+    private String firstCompleteTextConfigPrefix() {
+        return systemConfigRepository.findByConfigKeyStartingWithAndStatus("ai.service.text.", 1)
+                .stream()
+                .filter(config -> config.getConfigKey() != null && config.getConfigKey().endsWith(".model"))
+                .map(config -> removeSuffix(config.getConfigKey(), ".model"))
+                .filter(this::hasCompleteTextConfig)
+                .filter(this::isFreeTextConfig)
+                .sorted(Comparator.comparingInt(this::textConfigPriority).thenComparing(String::toString))
+                .findFirst()
+                .orElse("");
+    }
+
+    private boolean isFreeTextConfig(String configPrefix) {
+        return StringUtils.hasText(AiModelPolicy.effectiveFreeTextModel(
+                systemConfigService.getValue(configPrefix + ".provider", ""),
+                systemConfigService.getValue(configPrefix + ".model", "")
+        ));
+    }
+
+    private int textConfigPriority(String configPrefix) {
+        return AiModelPolicy.priority(AiModelPolicy.effectiveFreeTextModel(
+                systemConfigService.getValue(configPrefix + ".provider", ""),
+                systemConfigService.getValue(configPrefix + ".model", "")
+        ));
+    }
+
+    private String firstText(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
+    private String removeSuffix(String value, String suffix) {
+        if (value == null || suffix == null || !value.endsWith(suffix)) {
+            return "";
+        }
+        return value.substring(0, value.length() - suffix.length());
+    }
+
+    private Map<String, Object> withAgentToggles(Map<String, Object> request) {
+        return withAgentToggles(request, null);
+    }
+
+    private Map<String, Object> withAgentToggles(Map<String, Object> request, Long userId) {
+        Map<String, Object> copy = request == null ? new HashMap<>() : new HashMap<>(request);
+        Map<String, Object> metadata = new HashMap<>();
+        Object rawMetadata = copy.get("metadata");
+        if (rawMetadata instanceof Map<?, ?> sourceMetadata) {
+            sourceMetadata.forEach((key, value) -> metadata.put(String.valueOf(key), value));
+        }
+        if (userId != null && userId > 0L) {
+            metadata.put("userId", userId);
+        }
+        metadata.put("agentToggles", loadAgentToggles());
+        metadata.put("agentModelConfigs", loadAgentModelConfigs());
+        metadata.put("toolToggles", loadToolToggles());
+        metadata.put("toolBoundAgents", loadToolBoundAgents());
+        metadata.put("toolRetrievalProfiles", loadToolRetrievalProfiles());
+        copy.put("metadata", metadata);
+        return copy;
+    }
+
+    private Map<String, Object> loadToolRetrievalProfiles() {
+        Map<String, Object> profiles = new HashMap<>();
+        systemConfigRepository.findByConfigKeyStartingWithAndStatus(TOOL_RETRIEVAL_PREFIX, 1)
+                .forEach(config -> {
+                    String key = config.getConfigKey();
+                    if (!StringUtils.hasText(key) || key.length() <= TOOL_RETRIEVAL_PREFIX.length()) {
+                        return;
+                    }
+                    String toolName = key.substring(TOOL_RETRIEVAL_PREFIX.length()).trim();
+                    String raw = String.valueOf(config.getConfigValue() == null ? "" : config.getConfigValue()).trim();
+                    if (!StringUtils.hasText(toolName) || !StringUtils.hasText(raw)) {
+                        return;
+                    }
+                    try {
+                        Map<?, ?> parsed = objectMapper.readValue(raw, Map.class);
+                        Map<String, Object> profile = new HashMap<>();
+                        parsed.forEach((field, value) -> profile.put(String.valueOf(field), value));
+                        profiles.put(toolName, profile);
+                    } catch (JsonProcessingException e) {
+                        log.warn("忽略无效工具检索配置 tool={}", toolName);
+                    }
+                });
+        return profiles;
+    }
+
+    private Map<String, Object> loadAgentModelConfigs() {
+        Map<String, Object> configs = new HashMap<>();
+        systemConfigRepository.findByConfigKeyStartingWithAndStatus(AGENT_MODEL_BINDING_PREFIX, 1)
+                .forEach(binding -> {
+                    String key = binding.getConfigKey();
+                    if (!StringUtils.hasText(key) || !key.endsWith(".model") || key.length() <= AGENT_MODEL_BINDING_PREFIX.length()) {
+                        return;
+                    }
+                    String agentName = key.substring(
+                            AGENT_MODEL_BINDING_PREFIX.length(),
+                            key.length() - ".model".length()
+                    ).trim();
+                    String configPrefix = String.valueOf(binding.getConfigValue() == null ? "" : binding.getConfigValue()).trim();
+                    if (!StringUtils.hasText(agentName) || !StringUtils.hasText(configPrefix)) {
+                        return;
+                    }
+                    String provider = systemConfigService.getValue(configPrefix + ".provider", "");
+                    String baseUrl = systemConfigService.getValue(configPrefix + ".base-url", "");
+                    String apiKey = systemConfigService.getValue(configPrefix + ".api-key", "");
+                    String model = systemConfigService.getValue(configPrefix + ".model", "");
+                    String testedFingerprint = systemConfigService.getValue(configPrefix + ".tested-fingerprint", "");
+                    Map<String, Object> config = new HashMap<>();
+                    config.put("configPrefix", configPrefix);
+                    config.put("provider", provider);
+                    config.put("baseUrl", baseUrl);
+                    config.put("apiKey", apiKey);
+                    config.put("model", model);
+                    config.put("tested", StringUtils.hasText(testedFingerprint)
+                            && testedFingerprint.equals(QuestionGenerationServiceImpl.fingerprint(
+                                    provider, baseUrl, apiKey, model
+                            )));
+                    configs.put(agentName, config);
+                });
+        return configs;
+    }
+
+    private Object withAgentEnabledState(Object source) {
+        Map<String, Boolean> toggles = loadAgentToggles();
+        Map<String, Boolean> toolToggles = loadToolToggles();
+        if (!(source instanceof Map<?, ?> sourceMap)) {
+            return source;
+        }
+        Map<String, Object> copy = new HashMap<>();
+        sourceMap.forEach((key, value) -> copy.put(String.valueOf(key), value));
+        Object agentsValue = sourceMap.get("agents");
+        if (agentsValue instanceof List<?> agentsList) {
+            List<Object> mergedAgents = new ArrayList<>();
+            for (Object agent : agentsList) {
+                mergedAgents.add(mergeAgentEnabledState(agent, toggles));
+            }
+            copy.put("agents", mergedAgents);
+        }
+        copy.put("agentToggles", toggles);
+        Object toolsValue = sourceMap.get("generatedTools");
+        if (toolsValue instanceof List<?> toolsList) {
+            List<Object> mergedTools = new ArrayList<>();
+            for (Object tool : filterRemovedTools(toolsList)) {
+                mergedTools.add(mergeToolEnabledState(tool, toolToggles));
+            }
+            copy.put("generatedTools", mergedTools);
+        }
+        Object leaderToolsValue = sourceMap.get("leaderTools");
+        if (leaderToolsValue instanceof List<?> leaderToolsList) {
+            List<Object> mergedLeaderTools = new ArrayList<>();
+            for (Object tool : filterRemovedTools(leaderToolsList)) {
+                mergedLeaderTools.add(mergeToolEnabledState(tool, toolToggles));
+            }
+            copy.put("leaderTools", mergedLeaderTools);
+        }
+        Object serviceToolsValue = sourceMap.get("serviceTools");
+        if (serviceToolsValue instanceof List<?> serviceToolsList) {
+            List<Object> mergedServiceTools = new ArrayList<>();
+            for (Object tool : filterRemovedTools(serviceToolsList)) {
+                mergedServiceTools.add(mergeToolEnabledState(tool, toolToggles));
+            }
+            copy.put("serviceTools", mergedServiceTools);
+        }
+        Object visualToolsValue = sourceMap.get("visualTools");
+        if (visualToolsValue instanceof List<?> visualToolsList) {
+            copy.put("visualTools", filterRemovedTools(visualToolsList));
+        }
+        Object leaderCallableCatalogValue = sourceMap.get("leaderCallableCatalog");
+        if (leaderCallableCatalogValue instanceof Map<?, ?> leaderCallableCatalogMap) {
+            copy.put("leaderCallableCatalog", mergeLeaderCallableCatalogEnabledState(leaderCallableCatalogMap, toggles, toolToggles));
+        }
+        copy.put("toolToggles", toolToggles);
+        return copy;
+    }
+
+    private Object mergeAgentEnabledState(Object source, Map<String, Boolean> toggles) {
+        if (!(source instanceof Map<?, ?> sourceMap)) {
+            return source;
+        }
+        Map<String, Object> copy = new HashMap<>();
+        sourceMap.forEach((key, value) -> copy.put(String.valueOf(key), value));
+        String agentName = String.valueOf(copy.getOrDefault("name", ""));
+        copy.put("enabled", isAgentEnabled(agentName, toggles));
+        return copy;
+    }
+
+    private Object mergeToolEnabledState(Object source, Map<String, Boolean> toggles) {
+        if (!(source instanceof Map<?, ?> sourceMap)) {
+            return source;
+        }
+        Map<String, Object> copy = new HashMap<>();
+        sourceMap.forEach((key, value) -> copy.put(String.valueOf(key), value));
+        String toolName = String.valueOf(copy.getOrDefault("name", ""));
+        copy.put("enabled", isToolEnabled(toolName, toggles));
+        return copy;
+    }
+
+    private Object mergeLeaderCallableCatalogEnabledState(
+            Map<?, ?> sourceMap,
+            Map<String, Boolean> agentToggles,
+            Map<String, Boolean> toolToggles
+    ) {
+        Map<String, Object> copy = new HashMap<>();
+        sourceMap.forEach((key, value) -> copy.put(String.valueOf(key), value));
+        Object agentsValue = sourceMap.get("agents");
+        if (agentsValue instanceof List<?> agentsList) {
+            List<Object> mergedAgents = new ArrayList<>();
+            for (Object agent : agentsList) {
+                mergedAgents.add(mergeAgentEnabledState(agent, agentToggles));
+            }
+            copy.put("agents", mergedAgents);
+        }
+        Object toolsValue = sourceMap.get("tools");
+        if (toolsValue instanceof List<?> toolsList) {
+            List<Object> mergedTools = new ArrayList<>();
+            for (Object tool : filterRemovedTools(toolsList)) {
+                mergedTools.add(mergeToolEnabledState(tool, toolToggles));
+            }
+            copy.put("tools", mergedTools);
+        }
+        return copy;
+    }
+
+    private List<Object> filterRemovedTools(List<?> toolsList) {
+        List<Object> filtered = new ArrayList<>();
+        for (Object tool : toolsList) {
+            if (!(tool instanceof Map<?, ?> toolMap)) {
+                filtered.add(tool);
+                continue;
+            }
+            Object nameValue = toolMap.get("name");
+            String toolName = nameValue == null ? "" : String.valueOf(nameValue).trim();
+            if (REMOVED_TOOL_NAMES.contains(toolName)) {
+                continue;
+            }
+            filtered.add(tool);
+        }
+        return filtered;
+    }
+
+    private Map<String, Boolean> loadAgentToggles() {
+        Map<String, Boolean> toggles = new HashMap<>();
+        systemConfigRepository.findByConfigKeyStartingWithAndStatus(AGENT_ENABLED_PREFIX, 1)
+                .forEach(config -> {
+                    String key = config.getConfigKey();
+                    if (!StringUtils.hasText(key) || key.length() <= AGENT_ENABLED_PREFIX.length()) {
+                        return;
+                    }
+                    String agentName = key.substring(AGENT_ENABLED_PREFIX.length()).trim();
+                    if (StringUtils.hasText(agentName)) {
+                        toggles.put(agentName, parseEnabledValue(config.getConfigValue()));
+                    }
+                });
+        toggles.put(DEFAULT_AGENT_NAME, true);
+        return toggles;
+    }
+
+    private Map<String, String> loadToolBoundAgents() {
+        Map<String, String> bound = new HashMap<>();
+        systemConfigRepository.findByConfigKeyStartingWithAndStatus(TOOL_BOUND_PREFIX, 1)
+                .forEach(config -> {
+                    String key = config.getConfigKey();
+                    if (!StringUtils.hasText(key) || key.length() <= TOOL_BOUND_PREFIX.length()) {
+                        return;
+                    }
+                    String toolName = key.substring(TOOL_BOUND_PREFIX.length()).trim();
+                    if (StringUtils.hasText(toolName)) {
+                        bound.put(toolName, String.valueOf(config.getConfigValue() == null ? "" : config.getConfigValue()).trim());
+                    }
+                });
+        return bound;
+    }
+
+    private Map<String, Boolean> loadToolToggles() {
+        Map<String, Boolean> toggles = new HashMap<>();
+        systemConfigRepository.findByConfigKeyStartingWithAndStatus(TOOL_ENABLED_PREFIX, 1)
+                .forEach(config -> {
+                    String key = config.getConfigKey();
+                    if (!StringUtils.hasText(key) || key.length() <= TOOL_ENABLED_PREFIX.length()) {
+                        return;
+                    }
+                    String toolName = key.substring(TOOL_ENABLED_PREFIX.length()).trim();
+                    if (StringUtils.hasText(toolName)) {
+                        toggles.put(toolName, parseEnabledValue(config.getConfigValue()));
+                    }
+                });
+        return toggles;
+    }
+
+    private boolean isAgentEnabled(String agentName, Map<String, Boolean> toggles) {
+        if (!StringUtils.hasText(agentName) || DEFAULT_AGENT_NAME.equals(agentName)) {
+            return true;
+        }
+        return toggles.getOrDefault(agentName, true);
+    }
+
+    private boolean isToolEnabled(String toolName, Map<String, Boolean> toggles) {
+        if (!StringUtils.hasText(toolName)) {
+            return true;
+        }
+        return toggles.getOrDefault(toolName, true);
+    }
+
+    private boolean parseEnabledValue(String value) {
+        String normalized = String.valueOf(value == null ? "" : value).trim().toLowerCase();
+        return !List.of("0", "false", "off", "disabled", "no").contains(normalized);
+    }
+
+    private Map<String, Object> sanitizeRagRequest(Map<String, Object> request) {
+        if (request == null || request.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> copy = new HashMap<>(request);
+        copy.remove("llmModel");
+        copy.remove("xAiModel");
+        copy.remove("ragStrategy");
+        copy.remove("embeddingModel");
+        return copy;
+    }
+
+    private String resolveConfigPrefix(String requestedModel) {
+        if (!StringUtils.hasText(requestedModel)) {
+            throw new BusinessException(Result.ERROR_CODE, "未指定模型配置，请从已配置模型中明确选择");
+        }
+        String trimmed = requestedModel.trim();
+        if (!trimmed.startsWith("ai.service.")) {
+            throw new BusinessException(Result.ERROR_CODE, "模型参数必须是 ai.service.* 配置前缀");
+        }
+        return trimmed;
+    }
+
+    private String requireAiConfig(String configPrefix, String field, String label) {
+        String key = configPrefix + "." + field;
+        String value = systemConfigService.getValue(key, "");
+        if (!StringUtils.hasText(value)) {
+            throw new BusinessException(
+                    Result.ERROR_CODE,
+                    label + "未配置，请在系统配置中维护 " + key
+            );
+        }
+        return value;
+    }
+
+    private String extractRemoteMessage(WebClientResponseException e) {
+        String body = e.getResponseBodyAsString();
+        if (!StringUtils.hasText(body)) {
+            return e.getMessage();
+        }
+        try {
+            Object parsed = objectMapper.readValue(body, Object.class);
+            if (parsed instanceof Map<?, ?> map) {
+                Object detail = map.get("detail");
+                if (detail != null) {
+                    return detail.toString();
+                }
+                Object message = map.get("message");
+                if (message != null) {
+                    return message.toString();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return body;
+    }
+
+    private Object parsePayload(String payload) {
+        if (!StringUtils.hasText(payload)) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(payload, Object.class);
+        } catch (Exception ignored) {
+            return Map.of("content", payload);
+        }
+    }
+}

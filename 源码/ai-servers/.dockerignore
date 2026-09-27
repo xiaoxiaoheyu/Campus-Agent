@@ -1,0 +1,12 @@
+.git
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+data/ai-exports
+tests
+.uv-cache
+node_modules
+presenton_runtime/node_modules
+presenton_runtime/dist

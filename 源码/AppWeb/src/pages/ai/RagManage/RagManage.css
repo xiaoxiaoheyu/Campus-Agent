@@ -1,0 +1,460 @@
+.rag-manage {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rag-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.rag-heading h2 {
+  margin: 0 0 4px;
+  color: #111827;
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.rag-toolbar .ant-btn {
+  flex: 0 0 auto;
+}
+
+.rag-tabs .ant-tabs-nav {
+  margin-bottom: 16px;
+}
+
+.rag-panel-card,
+.rag-health-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.rag-health-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.rag-health-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  color: #2f5b42;
+  border-radius: 16px;
+  background: rgba(83, 126, 90, 0.12);
+  font-size: 20px;
+}
+
+.rag-workbench-card,
+.rag-agent-info-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.rag-workbench-card .ant-card-head,
+.rag-agent-info-card .ant-card-head {
+  border-bottom: 1px solid #eef2f7;
+}
+
+.rag-workbench-card .ant-card-body {
+  padding: 0;
+}
+
+.rag-agent-workbench {
+  display: grid;
+  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+  min-height: 560px;
+}
+
+.rag-agent-input-pane,
+.rag-agent-result-pane {
+  min-width: 0;
+  padding: 18px;
+}
+
+.rag-agent-input-pane {
+  border-right: 1px solid #eef2f7;
+  background: #fbfcfe;
+}
+
+.rag-agent-result-pane {
+  background: #fff;
+}
+
+.rag-pane-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.rag-pane-head strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #111827;
+  font-size: 16px;
+}
+
+.rag-agent-context {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.rag-compact-alert {
+  margin-bottom: 14px;
+  border-radius: 8px;
+}
+
+.rag-agent-image-upload-label {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.rag-result-empty {
+  display: flex;
+  min-height: 360px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.rag-agent-info-card .ant-card-body {
+  padding: 0;
+}
+
+.rag-agent-info-tabs .ant-tabs-nav {
+  margin: 0;
+  padding: 0 18px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.rag-agent-info-tabs .ant-tabs-tab {
+  padding: 14px 0;
+}
+
+.rag-agent-info-tabs .ant-tabs-content-holder {
+  padding: 18px;
+}
+
+.rag-agent-doc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rag-answer-box {
+  padding: 16px;
+  white-space: pre-wrap;
+  line-height: 1.75;
+  color: #111827;
+  border-radius: 8px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+}
+
+.rag-answer-box--mindmap {
+  white-space: normal;
+}
+
+.rag-answer-box--media {
+  white-space: normal;
+}
+
+.rag-media-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.rag-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.rag-media-card {
+  overflow: hidden;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(89, 108, 72, 0.16);
+}
+
+.rag-media-image {
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.rag-media-video {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  background: #111;
+}
+
+.rag-media-actions {
+  width: 100%;
+  padding: 10px 12px 12px;
+}
+
+.rag-media-raw {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rag-mindmap-canvas {
+  overflow: auto;
+  padding: 22px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(89, 108, 72, 0.16);
+}
+
+.rag-mindmap-node {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  min-width: max-content;
+}
+
+.rag-mindmap-node + .rag-mindmap-node {
+  margin-top: 12px;
+}
+
+.rag-mindmap-label {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 86px;
+  max-width: 220px;
+  padding: 8px 12px;
+  color: #183228;
+  border-radius: 999px;
+  background: #eaf5ec;
+  border: 1px solid rgba(47, 88, 67, 0.18);
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  word-break: break-word;
+}
+
+.rag-mindmap-children {
+  position: relative;
+  padding-left: 22px;
+}
+
+.rag-mindmap-children::before {
+  content: '';
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 0;
+  width: 1px;
+  background: rgba(47, 88, 67, 0.18);
+}
+
+.rag-mindmap-children > .rag-mindmap-node::before {
+  content: '';
+  flex: 0 0 22px;
+  height: 1px;
+  margin-top: 18px;
+  margin-left: -22px;
+  background: rgba(47, 88, 67, 0.18);
+}
+
+.rag-mindmap-source {
+  margin-top: 14px;
+}
+
+.rag-mermaid-code {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  line-height: 1.7;
+  color: #1f2c25;
+  border-radius: 12px;
+  border: 1px solid rgba(89, 108, 72, 0.2);
+  background: rgba(255, 255, 255, 0.55);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  white-space: pre;
+}
+
+.rag-code-block {
+  max-height: 420px;
+  padding: 16px;
+  overflow: auto;
+  border-radius: 16px;
+  color: #203128;
+  background: #f6f8f3;
+  border: 1px solid rgba(47, 88, 67, 0.12);
+}
+
+.rag-markdown-preview {
+  padding: clamp(18px, 3vw, 34px);
+  border: 1px solid rgba(179, 171, 146, 0.34);
+  border-radius: 22px;
+  background: #fffdf8;
+  color: #263832;
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+.rag-markdown-preview h1,
+.rag-markdown-preview h2,
+.rag-markdown-preview h3 {
+  color: #182c27;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  line-height: 1.35;
+}
+
+.rag-markdown-preview h1 {
+  margin: 0 0 22px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(179, 171, 146, 0.3);
+  font-size: clamp(27px, 4vw, 34px);
+}
+
+.rag-markdown-preview h2 {
+  margin: 34px 0 14px;
+  font-size: 23px;
+}
+
+.rag-markdown-preview p {
+  margin: 0 0 16px;
+}
+
+.rag-markdown-image {
+  display: block;
+  margin: 22px auto 30px;
+  text-align: center;
+}
+
+.rag-markdown-image img {
+  display: block;
+  max-width: min(100%, 760px);
+  max-height: 560px;
+  margin: 0 auto;
+  border-radius: 12px;
+  box-shadow: 0 12px 34px rgba(18, 31, 29, 0.12);
+}
+
+.rag-markdown-image__caption {
+  display: block;
+  margin-top: 9px;
+  color: #77847e;
+  font-size: 13px;
+}
+
+.rag-markdown-missing-image {
+  display: inline-flex;
+  margin: 8px 0 18px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f3f0e8;
+  color: #65716b;
+  font-size: 14px;
+}
+
+.rag-full {
+  width: 100%;
+}
+
+.rag-agent-test-tip {
+  display: block;
+  margin-top: 12px;
+  line-height: 1.6;
+}
+
+.rag-agent-example-save {
+  margin-bottom: 12px;
+}
+
+.rag-inline-alert {
+  margin-bottom: 24px;
+  border-radius: 14px;
+}
+
+.rag-agent-test-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rag-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.rag-provider-card {
+  min-width: 0;
+}
+
+.rag-provider-card .ant-table-wrapper,
+.rag-provider-card .ant-table {
+  min-width: 0;
+}
+
+.rag-provider-card .ant-table-cell {
+  vertical-align: top;
+}
+
+.rag-provider-card .ant-typography code {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .rag-toolbar {
+    flex-direction: column;
+    padding: 14px;
+  }
+
+  .rag-agent-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .rag-agent-input-pane {
+    border-right: 0;
+    border-bottom: 1px solid #eef2f7;
+  }
+
+  .rag-agent-info-tabs .ant-tabs-nav,
+  .rag-agent-info-tabs .ant-tabs-content-holder {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .rag-provider-grid {
+    grid-template-columns: 1fr;
+  }
+}

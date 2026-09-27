@@ -1,0 +1,278 @@
+import request from '../utils/request'
+
+// ========== 帖子 ==========
+
+export const getPostList = (params = {}) =>
+  request({
+    url: '/api/forum/posts',
+    method: 'get',
+    params: {
+      pageNum: params.pageNum ?? params.page ?? 1,
+      pageSize: params.pageSize ?? params.size ?? 10,
+      topicId: params.topicId,
+      keyword: params.keyword,
+      sortBy: params.sortBy,
+      userId: params.userId,
+      status: params.status,
+    },
+  })
+
+export const getAdminPostList = (params = {}) =>
+  request({
+    url: '/api/forum/posts/admin/list',
+    method: 'get',
+    params: {
+      pageNum: params.pageNum ?? params.page ?? 1,
+      pageSize: params.pageSize ?? params.size ?? 10,
+      topicId: params.topicId,
+      keyword: params.keyword,
+      sortBy: params.sortBy,
+      status: params.status,
+    },
+  })
+
+export const getPostDetail = (id) =>
+  request({
+    url: `/api/forum/posts/${id}`,
+    method: 'get',
+  })
+
+export const createPost = (data) =>
+  request({
+    url: '/api/forum/posts',
+    method: 'post',
+    data,
+  })
+
+export const updatePost = (id, data) =>
+  request({
+    url: `/api/forum/posts/${id}`,
+    method: 'put',
+    data,
+  })
+
+export const deletePost = (id) =>
+  request({
+    url: `/api/forum/posts/${id}`,
+    method: 'delete',
+  })
+
+export const batchDeletePosts = (ids) =>
+  request({
+    url: '/api/forum/posts/batch',
+    method: 'delete',
+    data: ids,
+  })
+
+export const togglePostPin = (id) =>
+  request({
+    url: `/api/forum/posts/${id}/pin`,
+    method: 'put',
+  })
+
+export const togglePostHighlight = (id) =>
+  request({
+    url: `/api/forum/posts/${id}/highlight`,
+    method: 'put',
+  })
+
+export const togglePostHidden = (id) =>
+  request({
+    url: `/api/forum/posts/${id}/hidden`,
+    method: 'put',
+  })
+
+export const getHotPosts = (params = {}) =>
+  request({
+    url: '/api/forum/posts/hot',
+    method: 'get',
+    params: {
+      pageNum: params.pageNum ?? params.page ?? 1,
+      pageSize: params.pageSize ?? params.size ?? 10,
+    },
+  })
+
+// ========== 评论 ==========
+
+export const togglePostFavorite = (postId) =>
+  request({
+    url: `/api/forum/favorites/${postId}`,
+    method: 'post',
+  })
+
+export const getPostFavoriteStatus = (postId) =>
+  request({
+    url: `/api/forum/favorites/status/${postId}`,
+    method: 'get',
+  })
+
+export const getMyFavoritePosts = (params = {}) =>
+  request({
+    url: '/api/forum/favorites/my',
+    method: 'get',
+    params: {
+      pageNum: params.pageNum ?? params.page ?? 1,
+      pageSize: params.pageSize ?? params.size ?? 10,
+    },
+  })
+
+export const getCommentList = (params = {}) =>
+  request({
+    url: params.admin ? '/api/forum/comments/admin/list' : '/api/forum/comments',
+    method: 'get',
+    params: {
+      postId: params.postId,
+      keyword: params.keyword,
+      status: params.status,
+      pageNum: params.pageNum ?? params.page ?? 1,
+      pageSize: params.pageSize ?? params.size ?? 20,
+    },
+  })
+
+export const getCommentDetail = (id) =>
+  request({
+    url: `/api/forum/comments/${id}`,
+    method: 'get',
+  })
+
+export const createComment = (data) =>
+  request({
+    url: '/api/forum/comments',
+    method: 'post',
+    data,
+  })
+
+export const deleteComment = (id) =>
+  request({
+    url: `/api/forum/comments/${id}`,
+    method: 'delete',
+  })
+
+export const adminDeleteComment = (id) =>
+  request({
+    url: `/api/forum/comments/admin/${id}`,
+    method: 'delete',
+  })
+
+export const batchDeleteComments = (ids) =>
+  request({
+    url: '/api/forum/comments/admin/batch',
+    method: 'delete',
+    data: ids,
+  })
+
+// ========== 举报 ==========
+
+export const getReportList = (params = {}) =>
+  request({
+    url: '/api/forum/reports',
+    method: 'get',
+    params: {
+      page: params.pageNum ?? params.page ?? 1,
+      size: params.pageSize ?? params.size ?? 10,
+      status: params.status,
+      targetType: params.targetType,
+      keyword: params.keyword,
+    },
+  })
+
+export const getReportDetail = (id) =>
+  request({
+    url: `/api/forum/reports/${id}`,
+    method: 'get',
+  })
+
+export const handleReport = (id, data) =>
+  request({
+    url: `/api/forum/reports/${id}/handle`,
+    method: 'put',
+    data,
+  })
+
+export const reopenReport = (id) =>
+  request({
+    url: `/api/forum/reports/${id}/reopen`,
+    method: 'put',
+  })
+
+export const getReportStatistics = () =>
+  request({
+    url: '/api/forum/reports/statistics',
+    method: 'get',
+  })
+
+export const getReportLogs = (id) =>
+  request({
+    url: `/api/forum/reports/${id}/logs`,
+    method: 'get',
+  })
+
+export const batchDeleteReports = (ids) =>
+  request({
+    url: '/api/forum/reports/batch',
+    method: 'delete',
+    data: ids,
+  })
+
+// ========== 话题 ==========
+
+export const getTopicList = (params = {}) =>
+  request({
+    url: '/api/forum/topics',
+    method: 'get',
+    params: {
+      pageNum: params.pageNum ?? params.page ?? 1,
+      pageSize: params.pageSize ?? params.size ?? 20,
+      isHot: params.isHot,
+      status: params.status,
+    },
+  })
+
+export const getHotTopics = (limit = 5) =>
+  request({
+    url: '/api/forum/topics/hot',
+    method: 'get',
+    params: { limit },
+  })
+
+export const createTopic = (data) =>
+  request({
+    url: '/api/forum/topics',
+    method: 'post',
+    data,
+  })
+
+export const updateTopic = (id, data) =>
+  request({
+    url: `/api/forum/topics/${id}`,
+    method: 'put',
+    data,
+  })
+
+export const deleteTopic = (id) =>
+  request({
+    url: `/api/forum/topics/${id}`,
+    method: 'delete',
+  })
+
+export const batchDeleteTopics = (ids) =>
+  request({
+    url: '/api/forum/topics/batch',
+    method: 'delete',
+    data: ids,
+  })
+
+// ========== 审核 / 管理 ==========
+
+// ========== 论坛统计 ==========
+export const getForumStatistics = () =>
+  request({
+    url: '/api/forum/statistics/overview',
+    method: 'get',
+  })
+
+export const getForumRules = () =>
+  request({
+    url: '/api/forum/statistics/rules',
+    method: 'get',
+  })
