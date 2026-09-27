@@ -78,10 +78,12 @@ services:
       - neo4j-data:/data
     healthcheck:
       test: ["CMD-SHELL", "password=\"$${NEO4J_AUTH#*/}\"; cypher-shell -u neo4j -p \"$$password\" 'RETURN 1' >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 25s
+      # cypher-shell 是 JVM 程序，在 2 vCPU 等较慢的机器上启动可能超过 5 秒，
+      # 过短的 timeout 会让健康的 Neo4j 一直被标记为 unhealthy 并卡住后端启动。
+      interval: 30s
+      timeout: 25s
+      retries: 12
+      start_period: 60s
 
   backend:
     image: ${BACKEND_IMAGE:-agent-a3/backend}:${IMAGE_TAG:-submission}

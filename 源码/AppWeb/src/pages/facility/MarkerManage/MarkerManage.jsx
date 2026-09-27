@@ -15,10 +15,10 @@ import {
   updateMapPlace,
 } from '../../../api/mapPlace'
 import { toFacilityTypeOptions, createFacilityTypeLabelGetter } from '../../../config/facilityType'
-import pinCanteen from '../../../../../mini_program_app/static/icons/map/pin-canteen.png'
-import pinInfra from '../../../../../mini_program_app/static/icons/map/pin-infra.png'
-import pinSport from '../../../../../mini_program_app/static/icons/map/pin-sport.png'
-import pinTeaching from '../../../../../mini_program_app/static/icons/map/pin-teaching.png'
+import pinCanteen from '../../../assets/map/pin-canteen.png'
+import pinInfra from '../../../assets/map/pin-infra.png'
+import pinSport from '../../../assets/map/pin-sport.png'
+import pinTeaching from '../../../assets/map/pin-teaching.png'
 import './MarkerManage.css'
 
 /* ============================================================

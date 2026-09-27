@@ -10,6 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BUILT_PYTHON_MODULE_PATH=/app/presenton_runtime/presentation-export/py/convert-linux-current \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/ \
+    UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    UV_HTTP_TIMEOUT=300 \
+    UV_CONCURRENT_DOWNLOADS=4 \
     VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:${PATH}"
 
@@ -37,15 +42,20 @@ RUN python -c "import urllib.request; urllib.request.urlretrieve('https://regist
     && npm --version
 
 # Match local workflow: uv sync from pyproject.toml + uv.lock
-RUN python -m pip install --no-cache-dir uv
+RUN python -m pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ uv
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
+    UV_CONCURRENT_DOWNLOADS=8 \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY app ./app
 COPY presenton_runtime ./presenton_runtime
 COPY main.py ./main.py
 
-RUN cd /app/presenton_runtime \
+RUN npm config set registry https://registry.npmmirror.com \
+    && cd /app/presenton_runtime \
     && npm ci --omit=dev \
     && npx esbuild src/template-v2-json-to-html.ts --bundle --platform=node --format=esm --outfile=dist/template-v2-json-to-html.mjs \
     && PRESENTON_EXPORT_REPO_BASE=https://gh-proxy.com/https://github.com/presenton/presenton-export/releases/download \
